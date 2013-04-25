@@ -440,7 +440,7 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
 
             $propsData = array('dom' => $dom);
             // when copying a node, the copy is always a new node. set $isNewNode to true
-            $newNodeId = $this->syncNode(null, $newPath, PathHelper::getParentPath($newPath), $row['type'], true, substr_count($newPath, "/"), array(), $propsData);
+            $newNodeId = $this->syncNode(null, $newPath, PathHelper::getParentPath($newPath), $row['type'], true, PathHelper::getPathDepth($newPath), array(), $propsData);
 
             $query = 'INSERT INTO phpcr_binarydata (node_id, property_name, workspace_name, idx, data)'.
                 '   SELECT ?, b.property_name, ?, b.idx, b.data FROM phpcr_binarydata b WHERE b.node_id = ?';
@@ -1200,7 +1200,7 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
         /*
          * TODO: https://github.com/jackalope/jackalope-doctrine-dbal/pull/26/files#L0R1057
          * the other thing i wonder: can't you do the replacement inside sql instead of loading and then storing
-         * the node? this will be extremly slow for a large set of nodes. i think you should use query builder here
+         * the node? this will be extremely slow for a large set of nodes. i think you should use query builder here
          * rather than raw sql, to make it work on a maximum of platforms.
          *
          * can you try to do this please? if we don't figure out how to do it, at least fix the where criteria, and
@@ -1224,7 +1224,7 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
             $values[':id' . $i]     = $row['id'];
             $values[':path' . $i]   = str_replace($srcAbsPath, $dstAbsPath, $row['path']);
             $values[':parent' . $i] = dirname($values[':path' . $i]);
-            $values[':depth' . $i]  = substr_count($values[':path' . $i], "/");
+            $values[':depth' . $i]  = PathHelper::getPathDepth($values[':path' . $i]);
 
             $updatePathCase   .= "WHEN id = :id" . $i . " THEN :path" . $i . " ";
             $updateParentCase .= "WHEN id = :id" . $i . " THEN :parent" . $i . " ";
@@ -1432,7 +1432,7 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
         $nodeIdentifier = $this->getIdentifier($path, $properties);
         $type = isset($properties['jcr:primaryType']) ? $properties['jcr:primaryType']->getValue() : "nt:unstructured";
 
-        $this->syncNode($nodeIdentifier, $path, PathHelper::getParentPath($path), $type, true, substr_count($path, "/"), $properties);
+        $this->syncNode($nodeIdentifier, $path, PathHelper::getParentPath($path), $type, true, PathHelper::getPathDepth($path), $properties);
 
         return true;
     }
