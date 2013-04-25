@@ -851,13 +851,39 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
         PathHelper::assertValidAbsolutePath($path);
         $this->assertLoggedIn();
 
-        $query = 'SELECT * FROM phpcr_nodes WHERE path = ? AND workspace_name = ?';
-        $row = $this->conn->fetchAssoc($query, array($path, $this->workspaceName));
-        if (!$row) {
+        $values[':path'] = $path;
+        $values[':pathd'] = rtrim($path,'/') . '/%';
+        $values[':workspace'] = $this->workspaceName;
+        $values[':fetchDepth'] = $this->fetchDepth;
+
+        $subquery = 'SELECT depth FROM phpcr_nodes WHERE path = :path AND workspace_name = :workspace';
+
+        $query = 'SELECT * FROM phpcr_nodes WHERE (path LIKE :pathd OR path = :path) AND workspace_name = :workspace AND depth <= ((' . $subquery . ') + :fetchDepth) ORDER BY sort_order ASC';
+
+        $stmt = $this->conn->executeQuery($query, $values);
+
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        if (count($rows) === 0) {
             throw new ItemNotFoundException("Item $path not found in workspace ".$this->workspaceName);
         }
 
-        return $this->getNodeData($path, $row);
+        $nodeData = array();
+
+        foreach ($rows as $row) {
+            if ($row['path'] == $path) {
+                $node = $this->getNodeData($path, $row);
+            } else {
+                $pathDiff = ltrim(substr($row['path'], strlen($path)),'/');
+                $nodeData[$pathDiff] = $this->getNodeData($row['path'], $row);
+            }
+        }
+
+        foreach ($nodeData as $key => $value) {
+            $node->{$key} = $value;
+        }
+
+        return $node;
     }
 
     private function getNodeData($path, $row)
@@ -903,10 +929,25 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
             return array();
         }
 
+        $params[':workspace'] = $this->workspaceName;
+        $params[':fetchDepth'] = $this->fetchDepth;
+
         $query = 'SELECT path AS arraykey, id, path, parent, local_name, namespace, workspace_name, identifier, type, props, depth, sort_order
-            FROM phpcr_nodes WHERE workspace_name = ? AND path IN (?)';
-        $params = array($this->workspaceName, $paths);
-        $stmt = $this->conn->executeQuery($query, $params, array(\PDO::PARAM_STR, Connection::PARAM_STR_ARRAY));
+            FROM phpcr_nodes WHERE workspace_name = :workspace AND (';
+
+        $i = 0;
+        foreach ($paths as $path) {
+            $params[':path'.$i] = $path;
+            $params[':pathd'.$i] = rtrim($path,'/') . '/%';
+            $subquery = 'SELECT depth FROM phpcr_nodes WHERE path = :path'.$i.' AND workspace_name = :workspace';
+            $query .= '(path LIKE :pathd'.$i.' OR path = :path'.$i.') AND depth <= ((' . $subquery . ') + :fetchDepth) OR ';
+            $i++;
+        }
+
+        $query = rtrim($query, 'OR ');
+        $query .= ') ORDER BY sort_order ASC';
+
+        $stmt = $this->conn->executeQuery($query, $params);
         $all = $stmt->fetchAll(\PDO::FETCH_UNIQUE | \PDO::FETCH_GROUP);
 
         $nodes = array();
@@ -1221,6 +1262,19 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
 
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
 
+            // TODO: Find a better way to do this
+            // Calculate CAST type for CASE statement
+            switch ($this->conn->getDatabasePlatform()->getName()) {
+                case 'pgsql':
+                    $intType = 'integer';
+                    break;
+                case 'mysql':
+                    $intType = 'unsigned';
+                    break;
+                default:
+                    $intType = 'integer';
+            }
+
             $values[':id' . $i]     = $row['id'];
             $values[':path' . $i]   = str_replace($srcAbsPath, $dstAbsPath, $row['path']);
             $values[':parent' . $i] = dirname($values[':path' . $i]);
@@ -1228,7 +1282,7 @@ class Client extends BaseTransport implements QueryTransport, WritingInterface, 
 
             $updatePathCase   .= "WHEN id = :id" . $i . " THEN :path" . $i . " ";
             $updateParentCase .= "WHEN id = :id" . $i . " THEN :parent" . $i . " ";
-            $updateDepthCase  .= "WHEN id = :id" . $i . " THEN :depth" . $i . " ";
+            $updateDepthCase  .= "WHEN id = :id" . $i . " THEN CAST(:depth" . $i . " AS " . $intType . ") ";
 
             if ($srcAbsPath === $row['path']) {
                 $values[':localname' . $i] = basename($values[':path' . $i]);
